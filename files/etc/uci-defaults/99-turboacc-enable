@@ -1,1 +1,4 @@
-
+#!/bin/sh
+# 首启时启用 Turbo ACC init 脚本，使面板里的开关在重启后保持生效
+/etc/init.d/turboacc enable
+exit 0
