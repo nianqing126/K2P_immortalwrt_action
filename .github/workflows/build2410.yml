@@ -1,4 +1,4 @@
-name: Build K2P TurboACC ZeroTier Firmware (24.10)
+name: Build K2P ImmortalWrt 24.10 Native Firmware
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: 24.10
+    name: 24.10 Native
     runs-on: ubuntu-22.04
 
     steps:
@@ -18,10 +18,15 @@ jobs:
 
       - name: 替换 Ubuntu 源为清华镜像（规避 azure 源连接超时）
         run: |
-          sudo sed -i 's/azure.archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
-          sudo sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
-          sudo sed -i 's/azure.archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
-          sudo sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+          sudo sed -i.bak 's/azure.archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
+          sudo sed -i.bak 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
+
+      - name: 增加 4G Swap（防止编译 OOM）
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: 安装编译依赖
         run: |
@@ -33,7 +38,7 @@ jobs:
             libyaml-dev swig libelf-dev
           sudo apt-get clean
 
-      - name: 拉取 ImmortalWrt 24.10 源码
+      - name: 拉取 ImmortalWrt openwrt-24.10 源码
         run: |
           git clone --depth 1 -b openwrt-24.10 \
             https://github.com/immortalwrt/immortalwrt.git openwrt
@@ -44,23 +49,13 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 注入 TurboACC 源码与内核补丁（不带 Shortcut-FE）
-        working-directory: openwrt
-        run: |
-          # 第三方 turboacc：luci-app-turboacc 面板 + nft-fullcone，
-          # 同时替换为打补丁的 firewall4 / libnftnl / nftables，并打入 952 内核补丁。
-          # --no-sfe：不编译 Shortcut-FE，保留主线软件流卸载。
-          curl -fsSL https://raw.githubusercontent.com/chenmozhijin/turboacc/luci/add_turboacc.sh \
-            -o /tmp/add_turboacc.sh
-          bash /tmp/add_turboacc.sh --no-sfe
-
-      - name: 写入种子配置与定制 overlay 文件
+      - name: 写入种子配置与 overlay 文件
         run: |
           cp configs/immortalwrt-24.10.config openwrt/.config
           mkdir -p openwrt/files
           cp -a files/. openwrt/files/
 
-      - name: 生成 defconfig（自动补齐 ZeroTier / TurboACC / UPnP 依赖）
+      - name: 生成 defconfig（自动补齐 ZeroTier / UPnP / kmod 依赖）
         working-directory: openwrt
         run: make defconfig
 
@@ -68,14 +63,20 @@ jobs:
         working-directory: openwrt
         run: make download -j2 V=s
 
-      - name: 编译固件
+      - name: 单线程编译，输出完整日志（便于定位报错）
         working-directory: openwrt
-        run: make -j2 V=s
+        run: make -j1 V=s 2>&1 | tee build.log
+
+      - name: 上传编译日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-24.10-native
+          path: openwrt/build.log
+          retention-days: 30
 
       - name: 查看镜像体积
         run: |
           ls -lh openwrt/bin/targets/ramips/mt7621/
-          echo "--- sysupgrade 镜像 ---"
           find openwrt/bin/targets/ramips/mt7621/ -name "*sysupgrade*.bin" -exec ls -lh {} \;
 
       - name: 体积校验（16MB 闪存，镜像必须 < 15MB）
@@ -90,7 +91,7 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: k2p-turboacc-24.10
+          name: k2p-24.10-native
           path: |
             openwrt/bin/targets/ramips/mt7621/*k2p*.bin
             openwrt/bin/targets/ramips/mt7621/*k2p*.sha256
