@@ -1,1 +1,15 @@
 
+config turboacc 'config'
+	# 软件流卸载（MT7621 上可用的快速路径）
+	option sw_flow '1'
+	# 硬件流量分载：MT7621 主线无硬件 NAT 驱动，保持关闭，勾选也不生效
+	option hw_flow '0'
+	# Shortcut-FE：本固件不带 sfe 模块，保持关闭
+	option sfe_flow '0'
+	# 全锥形 NAT：默认关闭，需要时在 Turbo ACC 面板里手动开启
+	option fullcone_nat '0'
+	option fullcone6 '0'
+	# MTK WED 无线加速：仅 Filogic 平台，MT7621 关闭
+	option hw_wed '0'
+	# BBR 拥塞控制：默认关闭（沿用内核 CUBIC），面板里可一键切换
+	option bbr_cca '0'
