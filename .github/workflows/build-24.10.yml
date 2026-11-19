@@ -15,9 +15,13 @@ jobs:
           sudo sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
 
       - name: 增加4G Swap
-        uses: pierreroches/swapfile-action@v1
-        with:
-          size: 4G
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       - name: 安装编译依赖
         run: |
