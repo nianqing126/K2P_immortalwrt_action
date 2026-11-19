@@ -1,1 +1,100 @@
+name: Build K2P TurboACC ZeroTier Firmware
 
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 发布标签（留空则只存 Artifacts，不发 Release）
+        default: ""
+
+jobs:
+  build:
+    name: ${{ matrix.flavor }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: 24.10
+            branch: openwrt-24.10
+            config: configs/immortalwrt-24.10.config
+          - flavor: snapshot
+            branch: master
+            config: configs/immortalwrt-snapshot.config
+
+    steps:
+      - name: Checkout 仓库
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib gettext \
+            git libncurses-dev libssl-dev libxml-parser-perl make patch \
+            python3 python3-setuptools rsync unzip wget zlib1g-dev file \
+            libyaml-dev swig
+          sudo apt-get clean
+
+      - name: 拉取 ImmortalWrt 源码（${{ matrix.flavor }}）
+        run: |
+          git clone --depth 1 -b ${{ matrix.branch }} \
+            https://github.com/immortalwrt/immortalwrt.git openwrt
+
+      - name: 更新并安装 feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 注入 TurboACC 源码与内核补丁（不带 Shortcut-FE）
+        working-directory: openwrt
+        run: |
+          # 第三方 turboacc：luci-app-turboacc 面板 + nft-fullcone，
+          # 同时替换为打补丁的 firewall4 / libnftnl / nftables，并打入 952 内核补丁。
+          # --no-sfe：不编译 Shortcut-FE，保留主线软件流卸载。
+          curl -fsSL https://raw.githubusercontent.com/chenmozhijin/turboacc/luci/add_turboacc.sh \
+            -o /tmp/add_turboacc.sh
+          bash /tmp/add_turboacc.sh --no-sfe
+
+      - name: 写入种子配置与定制 overlay 文件
+        run: |
+          cp ${{ matrix.config }} openwrt/.config
+          mkdir -p openwrt/files
+          cp -a files/. openwrt/files/
+
+      - name: 生成 defconfig（自动补齐 ZeroTier / TurboACC / UPnP 依赖）
+        working-directory: openwrt
+        run: make defconfig
+
+      - name: 下载软件包源码
+        working-directory: openwrt
+        run: make download -j2 V=s
+
+      - name: 编译固件
+        working-directory: openwrt
+        run: make -j2 V=s
+
+      - name: 查看镜像体积
+        run: |
+          ls -lh openwrt/bin/targets/ramips/mt7621/
+          echo "--- sysupgrade 镜像 ---"
+          find openwrt/bin/targets/ramips/mt7621/ -name "*sysupgrade*.bin" -exec ls -lh {} \;
+
+      - name: 体积校验（16MB 闪存，镜像必须 < 15MB）
+        run: |
+          MAX=$((15 * 1024 * 1024))
+          BIG=$(find openwrt/bin/targets/ramips/mt7621/ -name "*sysupgrade*.bin" -size +${MAX}c | head -1)
+          if [ -n "$BIG" ]; then
+            echo "!! 镜像超过 15MB，16MB 闪存装不下: $BIG"
+            exit 1
+          fi
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: k2p-turboacc-${{ matrix.flavor }}
+          path: |
+            openwrt/bin/targets/ramips/mt7621/*k2p*.bin
+            openwrt/bin/targets/ramips/mt7621/*k2p*.sha256
+          retention-days: 30
