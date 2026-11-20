@@ -1,0 +1,172 @@
+name: 编译 K2P A2 固件 (16MB 原厂闪存)
+
+# 触发方式：
+#   1. 手动在 Actions 页面点击 Run workflow
+#   2. 推送配置文件/脚本到 main 分支时自动编译
+on:
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: '编译失败后是否开启 tmate 远程调试 (30分钟)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      release:
+        description: '编译成功后是否发布为 Release'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+  push:
+    branches:
+      - main
+    paths:
+      - 'configs/**'
+      - 'scripts/**'
+      - 'files/**'
+      - '.github/workflows/build.yml'
+
+# ======================== 可自定义环境变量 ========================
+env:
+  # OpenWrt 源码仓库（默认 Lean 的 LEDE，自带中文 LuCI 与 MTK 驱动）
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  # 编译配置文件
+  CONFIG_FILE: configs/k2p-a2.config
+  # DIY 脚本：用于加载第三方源、打补丁等（可留空）
+  DIY_SCRIPT: scripts/diy.sh
+  # 固件输出目录（K2P = ramips/mt7621）
+  FIRMWARE_DIR: bin/targets/ramips/mt7621
+  # 设备标识
+  DEVICE_NAME: phicomm_k2p
+  # 16MB 闪存固件上限（单位 KiB），来自源码 IMAGE_SIZE := 15744k
+  MAX_FIRMWARE_KB: 15744
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: 云编译 K2P A2
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 检出编译项目
+        uses: actions/checkout@v4
+
+      - name: 初始化编译环境
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3 python3-distutils rsync unzip zlib1g-dev file wget \
+            libelf-dev ccache
+          echo "编译依赖安装完成"
+
+      - name: 获取 OpenWrt 源码
+        run: |
+          git clone --depth=1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
+          cd openwrt
+          echo "源码提交: $(git log -1 --format='%h %cs %s')"
+
+      - name: 更新 Feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 执行 DIY 脚本 (第三方源/补丁)
+        working-directory: openwrt
+        run: |
+          if [ -f "../$DIY_SCRIPT" ] && [ -s "../$DIY_SCRIPT" ]; then
+            bash "../$DIY_SCRIPT"
+          else
+            echo "DIY 脚本为空，跳过"
+          fi
+
+      - name: 加载编译配置
+        working-directory: openwrt
+        run: |
+          cp "../$CONFIG_FILE" .config
+          # 复制自定义文件（首次启动脚本、默认配置等）
+          if [ -d ../files ]; then
+            rm -rf files
+            cp -a ../files ./files
+          fi
+          make defconfig
+          echo "===== 关键配置校验 ====="
+          grep -E \
+            'CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p|CONFIG_PACKAGE_luci-app-(zerotier|upnp|turboacc)|INCLUDE_(BBR|FULLCONE|HW_FLOW|SHORTCUT)|CONFIG_PACKAGE_zerotier' \
+            .config || true
+
+      - name: 预下载 dl 依赖
+        working-directory: openwrt
+        run: make -j$(nproc) download V=s
+
+      - name: 编译固件
+        working-directory: openwrt
+        run: |
+          make -j$(($(nproc) + 1)) V=s || \
+          { echo "多线程编译失败，尝试单线程重试..."; make -j1 V=s; }
+
+      - name: 校验固件大小 (16MB 限制)
+        working-directory: openwrt
+        run: |
+          set -e
+          FW=$(ls $FIRMWARE_DIR/*sysupgrade*.bin 2>/dev/null | head -n1)
+          if [ -z "$FW" ]; then
+            echo "::error::未找到 sysupgrade 固件，编译可能失败"
+            exit 1
+          fi
+          SIZE_KB=$(( $(stat -c %s "$FW") / 1024 ))
+          echo "固件: $FW"
+          echo "固件大小: ${SIZE_KB} KiB / 上限 ${MAX_FIRMWARE_KB} KiB"
+          if [ "$SIZE_KB" -gt "$MAX_FIRMWARE_KB" ]; then
+            echo "::error::固件超过 16MB 闪存上限 (${SIZE_KB} > ${MAX_FIRMWARE_KB} KiB)，请精简插件后重编译！"
+            exit 1
+          fi
+          echo "✅ 固件大小符合 16MB 闪存要求"
+
+      - name: 整理固件产物
+        run: |
+          mkdir -p artifact
+          cp openwrt/$FIRMWARE_DIR/*sysupgrade*.bin artifact/ 2>/dev/null || true
+          cp openwrt/$FIRMWARE_DIR/*factory*.bin artifact/ 2>/dev/null || true
+          cp openwrt/$FIRMWARE_DIR/*-fullcone*.bin artifact/ 2>/dev/null || true
+          cd artifact
+          sha256sum *.bin > sha256sum.txt
+          echo "===== 产物清单 ====="
+          ls -lh
+
+      - name: 上传固件 (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: k2p-a2-firmware-${{ github.run_number }}
+          path: artifact/*
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: inputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: k2p-a2-${{ github.run_number }}
+          name: K2P A2 固件 - ${{ github.run_number }}
+          body: |
+            自动编译的斐讯 K2P A2 固件（16MB 原厂闪存）
+            功能：ZeroTier + 中文页 / UPnP + 中文页 / 硬件加速 / BBR / Fullcone NAT
+            源码：${{ env.REPO_URL }} (${{ env.REPO_BRANCH }})
+          files: artifact/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 远程调试 (失败时)
+        if: failure() && inputs.debug == 'true'
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          timeout-minutes: 30
