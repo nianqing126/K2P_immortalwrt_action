@@ -1,1 +1,54 @@
+#!/bin/sh
+# ============================================================================
+# K2P A2 首次启动初始化脚本（仅首次开机执行一次，之后自动删除）
+# 作用：确保 BBR / Fullcone NAT / 硬件加速 生效，并设置中文与时区
+# 由 OpenWrt 的 uci-defaults 机制在首次启动时自动执行
+# ============================================================================
 
+# ---------- 1. 系统基本信息：时区 / 主机名 ----------
+uci set system.@system[0].hostname='K2P-A2'
+uci set system.@system[0].timezone='CST-8'
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci set system.@system[0].conloglevel='8'
+uci commit system
+
+# ---------- 2. LuCI 默认中文 ----------
+uci set luci.main.lang='zh_cn'
+uci commit luci
+
+# ---------- 3. BBR 拥塞控制（内核参数，立即 + 持久） ----------
+# 立即生效
+sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+# 持久化（sysctl.d 配置由固件内置，若存在则确保加载）
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-bbr-lede.conf <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+/etc/init.d/sysctl restart >/dev/null 2>&1
+
+# ---------- 4. TurboACC：默认开启全部加速功能 ----------
+# TurboACC 配置文件可能为 turboacc，字段随版本略有差异，
+# 这里用 uci 逐一设置，不存在的字段会被忽略，不影响系统启动。
+if [ -f /etc/config/turboacc ]; then
+    uci set turboacc.config.flow_offload='1'      # 软件流量卸载
+    uci set turboacc.config.hw_flow='1'           # 硬件流量卸载 (MT7621 PPE)
+    uci set turboacc.config.shortcut_fe='1'       # Shortcut FE 转发加速
+    uci set turboacc.config.bbr_cca='1'           # TCP BBR
+    uci set turboacc.config.fullcone_nat='1'      # Fullcone NAT (NAT1)
+    uci commit turboacc
+    /etc/init.d/turboacc restart >/dev/null 2>&1
+fi
+
+# ---------- 5. 防火墙：Fullcone NAT 规则兜底 ----------
+# TurboACC 已集成 fullcone，若使用独立 fullconenat 包则追加规则
+if iptables -t nat -m nat --help 2>/dev/null | grep -qi FULLCONENAT || \
+   iptables -t nat -j FULLCONENAT --help >/dev/null 2>&1; then
+    iptables -t nat -C zone_wan_postrouting -j FULLCONENAT 2>/dev/null || \
+        iptables -t nat -A zone_wan_postrouting -j FULLCONENAT 2>/dev/null
+    iptables -t nat -C zone_wan_prerouting -j FULLCONENAT 2>/dev/null || \
+        iptables -t nat -A zone_wan_prerouting -j FULLCONENAT 2>/dev/null
+fi
+
+exit 0
