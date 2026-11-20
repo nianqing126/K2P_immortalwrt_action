@@ -89,10 +89,23 @@ jobs:
             cp -a ../files-lean ./files
           fi
           make defconfig
-          echo "===== 关键配置校验 ====="
-          grep -E \
-            'CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p|CONFIG_PACKAGE_luci-app-(zerotier|upnp|turboacc)|INCLUDE_(BBR|FULLCONE|HW_FLOW|SHORTCUT)|CONFIG_PACKAGE_zerotier' \
-            .config || true
+
+          # ★ 双保险：Lean master 默认勾选 ssr-plus/xray/双主题/IPv6 全家桶，
+          #   即便 seed 配置里写了 =n，这里再从 .config 强制剔除，确保不超限。
+          DISABLE="
+            luci-app-ssr-plus xray-core dns2tcp ipt2socks microsocks v2ray shadowsocksr-libev
+            luci-app-vlmcsd vlmcsd luci-app-vsftpd vsftpd luci-app-filetransfer
+            luci-app-ddns ddns-scripts luci-app-nlbwmon nlbwmon luci-app-wol
+            luci-app-arpbind luci-app-autoreboot luci-app-oui luci-theme-design
+          "
+          for p in $DISABLE; do
+            sed -i "s/^CONFIG_PACKAGE_${p}=y$/# CONFIG_PACKAGE_${p} is not set/" .config
+          done
+
+          echo "===== 关键保留项(含 IPv6) ====="
+          grep -E 'CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p|CONFIG_PACKAGE_(zerotier|luci-app-zerotier|luci-app-upnp|kmod-nft-offload|kmod-nft-fullcone|kmod-tcp-bbr|luci-proto-ipv6|odhcpd-ipv6only|odhcp6c|ipv6helper|ip6tables|kmod-ip6tables)' .config || true
+          echo "===== 确认全家桶已关闭(应无 y 输出) ====="
+          grep -E '^CONFIG_PACKAGE_(luci-app-ssr-plus|xray-core|luci-app-vlmcsd|luci-app-vsftpd|luci-theme-design)=y$' .config || echo "OK: 全家桶已全部关闭"
 
       - name: 预下载 dl 依赖
         working-directory: openwrt
