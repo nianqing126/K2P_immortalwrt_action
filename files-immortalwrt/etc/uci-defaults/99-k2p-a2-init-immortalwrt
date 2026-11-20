@@ -1,1 +1,42 @@
+#!/bin/sh
+# ============================================================================
+# K2P A2 首次启动初始化脚本 —— ImmortalWrt (firewall4 / nftables) 专用
+# 仅首次开机执行一次，之后由系统自动删除。
+# 作用：开启 Fullcone NAT / 硬件流卸载 / BBR，设置中文与时区
+# ============================================================================
 
+# ---------- 1. 系统基本信息 ----------
+uci set system.@system[0].hostname='K2P-A2'
+uci set system.@system[0].timezone='CST-8'
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci set system.@system[0].conloglevel='8'
+uci commit system
+
+# ---------- 2. LuCI 默认中文 ----------
+uci set luci.main.lang='zh_cn'
+uci commit luci
+
+# ---------- 3. Fullcone NAT + 硬件加速 (firewall4 UCI) ----------
+# ImmortalWrt 的 firewall4 已打 fullcone 补丁，直接通过 UCI 开启：
+#   fullcone         -> Fullcone NAT (NAT1)
+#   flow_offloading  -> 软件流卸载
+#   flow_offloading_hw -> 硬件流卸载 (MT7621 PPE)
+uci set firewall.@defaults[0].fullcone='1'
+uci set firewall.@defaults[0].flow_offloading='1'
+uci set firewall.@defaults[0].flow_offloading_hw='1'
+uci commit firewall
+
+# ---------- 4. BBR 拥塞控制（立即 + 持久） ----------
+sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1
+sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-bbr-immortalwrt.conf <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+/etc/init.d/sysctl restart >/dev/null 2>&1
+
+# ---------- 5. 重启防火墙使 fullcone / offload 生效 ----------
+/etc/init.d/firewall restart >/dev/null 2>&1
+
+exit 0
