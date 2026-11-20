@@ -1,8 +1,7 @@
 name: 编译 K2P A2 固件 - LEDE 方案
 
-# 触发方式：
-#   1. 手动在 Actions 页面点击 Run workflow
-#   2. 推送配置文件/脚本到 main 分支时自动编译
+# 触发方式：仅手动 —— 在 Actions 页面点击 Run workflow
+# （增删/修改文件不会再触发编译，避免无谓重编译）
 on:
   workflow_dispatch:
     inputs:
@@ -102,16 +101,40 @@ jobs:
       - name: 编译固件
         working-directory: openwrt
         run: |
-          make -j$(($(nproc) + 1)) V=s || \
-          { echo "多线程编译失败，尝试单线程重试..."; make -j1 V=s; }
+          make -j$(($(nproc) + 1)) V=s
+          echo "编译命令返回码: $?"
+
+      - name: 诊断镜像产物 (无论成败都列出)
+        working-directory: openwrt
+        if: always()
+        run: |
+          echo "===== 目标设备 (.config 校验) ====="
+          grep -E 'CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p|CONFIG_PACKAGE_luci-app-turboacc' .config 2>/dev/null || echo "未读到 .config"
+          echo ""
+          echo "===== bin/targets/ramips/mt7621 目录内容 ====="
+          ls -lh bin/targets/ramips/mt7621/ 2>/dev/null || echo "目录不存在：编译未产出该目标镜像"
+          echo ""
+          echo "===== 搜索所有 sysupgrade/factory 固件 ====="
+          find bin/targets -type f \( -name '*sysupgrade*.bin' -o -name '*factory*.bin' \) -printf '%p  %k KiB\n' 2>/dev/null || true
+          echo ""
+          echo "===== 扫描编译日志中的体积超限关键字 ====="
+          if grep -riq 'too big\|exceed\|Image.*too large' logs/ 2>/dev/null; then
+            echo "::warning::检测到镜像体积超限相关日志，固件可能被跳过。请精简插件。"
+            grep -ri 'too big\|exceed\|Image.*too large' logs/ 2>/dev/null | tail -20 || true
+          else
+            echo "未在 logs/ 中发现体积超限关键字"
+          fi
 
       - name: 校验固件大小 (16MB 限制)
         working-directory: openwrt
         run: |
           set -e
-          FW=$(ls $FIRMWARE_DIR/*sysupgrade*.bin 2>/dev/null | head -n1)
+          # 放宽匹配：兼容 squashfs-sysupgrade / sysupgrade / K2P 各种命名
+          FW=$(find "$FIRMWARE_DIR" -maxdepth 1 -type f -name '*sysupgrade*.bin' 2>/dev/null | head -n1)
           if [ -z "$FW" ]; then
-            echo "::error::未找到 sysupgrade 固件，编译可能失败"
+            echo "::error::未找到 sysupgrade 固件（$FIRMWARE_DIR 下无匹配文件）。"
+            echo "::error::常见原因：① 固件体积超过 15744k 被跳过；② 目标设备未选中；③ 编译中途失败。"
+            echo "::error::请查看上一步『诊断镜像产物』列出的目录内容与编译日志中的 'Image files are too big' 字样。"
             exit 1
           fi
           SIZE_KB=$(( $(stat -c %s "$FW") / 1024 ))
@@ -126,11 +149,10 @@ jobs:
       - name: 整理固件产物
         run: |
           mkdir -p artifact
-          cp openwrt/$FIRMWARE_DIR/*sysupgrade*.bin artifact/ 2>/dev/null || true
-          cp openwrt/$FIRMWARE_DIR/*factory*.bin artifact/ 2>/dev/null || true
-          cp openwrt/$FIRMWARE_DIR/*-fullcone*.bin artifact/ 2>/dev/null || true
+          find openwrt/$FIRMWARE_DIR -maxdepth 1 -type f \( -name '*sysupgrade*.bin' -o -name '*factory*.bin' \) \
+            -exec cp {} artifact/ \; 2>/dev/null || true
           cd artifact
-          sha256sum *.bin > sha256sum.txt
+          [ -n "$(ls *.bin 2>/dev/null)" ] && sha256sum *.bin > sha256sum.txt || echo "无固件文件可校验"
           echo "===== 产物清单 ====="
           ls -lh
 
