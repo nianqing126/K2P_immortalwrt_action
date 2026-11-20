@@ -1,142 +1,176 @@
-# K2P ImmortalWrt 双版本云编译工程（纯主线，无 turboacc）
+# 斐讯 K2P A2 云编译项目（16MB 原厂闪存）
 
-面向 **斐讯 K2P（A2，MT7621，mipsel_24kc，128MB 内存，16MB 闪存）** 的统一编译工程，一个工作流同时出两个版本：
+开箱即用的 GitHub Actions 云编译项目，专为**斐讯 K2P A2**（MT7621 + MT7615，128MB 内存，**16MB 未改闪存**）定制。提供**三个完全独立的工作流**：
 
-| 版本 | 源码引用 | 包管理器 | 内核 | 定位 |
-|---|---|---|---|---|
-| **24.10** | 分支 `openwrt-24.10` | opkg | 6.6 | ✅ 主力推荐，兼容性最稳 |
-| **25.12.2** | 标签 `v25.12.2` | apk | 6.12.103 | ⚠️ 尝鲜测试 |
+| 方案 | 工作流 | 源码 / 内核 |
+| --- | --- | --- |
+| LEDE | `build-lean.yml` | coolsnowwolf/lede · 较旧内核 |
+| **ImmortalWrt 25.12** | `build-immortalwrt-25.12.yml` | openwrt-25.12 · **内核 6.12**（当前稳定） |
+| **ImmortalWrt 24.10** | `build-immortalwrt-24.10.yml` | openwrt-24.10 · **内核 6.6** |
 
-- **纯主线包**：不注入第三方 turboacc，不打第三方内核补丁，规避 952 conntrack 补丁 `Hunk FAILED` 编译错误。
-- 基础功能保留官方默认：双频 WiFi、LuCI 中文、防火墙、DHCP、PPPoE、SSH。
-- 加装：**ZeroTier 组网**、**UPnP**、主线流卸载 / BBR / fullcone 内核模块。
+> 24.10 与 25.12 **分成两个独立 yml 分别产出固件**，互不干扰，无需在运行时选分支。想用新内核选 25.12，想要更成熟的 6.6 内核选 24.10。
 
----
+三个方案都集成以下功能，且**管理页均为中文**：
 
-## 一、功能与操作界面一览
-
-| 功能 | 固件默认 | 操作方式 / 界面 | 说明 |
-|---|---|---|---|
-| 软件流卸载（flow offload） | 已开启 | **LuCI → 网络 → 防火墙** 页面勾选框（官方内置） | nftables 软件快速路径；硬件分载 MT7621 无主线驱动，保持关闭 |
-| 全锥 NAT（fullcone，IPv4） | 已开启 | 主线防火墙4 UCI 开关，首启脚本预置 | LuCI 页面是否显示该勾选框取决于 luci 版本；不显示也不影响默认生效。**仅 UDP 全锥**，TCP 退化为普通 MASQUERADE |
-| BBR 拥塞控制 | 已开启 | 主线无独立网页开关，sysctl 预置 | 开机即 BBR + fq 队列；改回 CUBIC 见第六节 |
-| UPnP | 已装应用 | **LuCI → 服务 → UPnP** 官方页面 | fw4/nftables 配套 |
-| ZeroTier | 已装应用 | **LuCI → 服务 → ZeroTier** 官方页面（中文） | 走 tun 虚拟网卡 |
-
-### 关于“没有网页开关”的两项
-
-- **BBR**：主线没有 LuCI 切换应用，工程用 `/etc/sysctl.d/99-bbr.conf` 预置 BBR，刷完即用，不用敲命令开启。
-- **fullcone**：主线防火墙4 通过 UCI `defaults.fullcone` 控制，首启脚本写入并提交；LuCI 界面未必渲染这个勾选框，但配置已生效。
+| 功能 | LEDE 方案 | ImmortalWrt 方案（24.10 / 25.12） |
+| --- | --- | --- |
+| **ZeroTier** | `luci-app-zerotier` + 中文包 | `luci-app-zerotier` + 中文包 |
+| **UPnP** | `luci-app-upnp` + 中文包 | `luci-app-upnp` + 中文包 |
+| **硬件加速** | TurboACC `hw_flow` + Shortcut FE | `kmod-nft-offload`（MT7621 PPE 硬件流卸载） |
+| **BBR** | TurboACC `bbr_cca` | `kmod-tcp-bbr` + 内核参数 |
+| **Fullcone NAT** | TurboACC `fullcone_nat` | 官方 `kmod-nft-fullcone` + `fullconenat-nft` |
 
 ---
 
-## 二、内置组件清单（已在官方 feed 核对存在）
+## ⚠️ 16MB 闪存的重要约束
 
-| 类别 | 包 / 模块 |
-|---|---|
-| 组网 | `zerotier`、`luci-app-zerotier`、`luci-i18n-zerotier-zh-cn`、`kmod-tun` |
-| 流卸载 | `kmod-nft-offload` |
-| 拥塞控制 | `kmod-tcp-bbr` |
-| 全锥 NAT | `kmod-nft-fullcone`（防火墙4 原生支持） |
-| UPnP | `miniupnpd-nftables`、`luci-app-upnp`、`luci-i18n-upnp-zh-cn` |
-| LuCI 基础 | `luci`、`luci-mod-admin-full`、`luci-theme-bootstrap`、`luci-i18n-base-zh-cn`、`luci-compat` |
+> K2P 固件分区中 firmware 上限为 **`15744 KiB`（约 15.4MB）**，这是分区表决定的硬限制。三个方案都已核实该值。
+>
+> - 已针对该限制精简：不编译 initramfs、不启用大主题、不开 IPv6 全家桶。
+> - 三个工作流编译后都**自动校验固件大小**，超过 15744 KiB 直接报错中止。
+> - 若自行添加大型插件导致超限，请删减后重编译。
+>
+> **务必确认是 16MB 原厂闪存且未改分区**。若已改 32MB 或刷 Breed 改分区表，需自行调大 `IMAGE_SIZE`。
 
-**不带**：EasyTier、Shortcut-FE、Docker、第三方 turboacc 面板。
+---
 
-设备符号（两份 config 一致，已对照官方 `config.buildinfo` 核对）：
+## 🚀 快速开始
+
+### 第 1 步：Fork + 开启 Actions
+
+Fork 本仓库 → 进入 **`Actions`** 标签页 → 启用工作流。
+
+### 第 2 步：选择工作流并运行
+
+在左侧工作流列表中选择：
+
+| 想编译 | 选择的工作流 | 产物名前缀 |
+| --- | --- | --- |
+| LEDE | `编译 K2P A2 固件 - LEDE 方案` | `k2p-a2-firmware-` |
+| ImmortalWrt 25.12（内核6.12） | `编译 K2P A2 固件 - ImmortalWrt 25.12 (内核6.12)` | `k2p-a2-immortalwrt-25.12-` |
+| ImmortalWrt 24.10（内核6.6） | `编译 K2P A2 固件 - ImmortalWrt 24.10 (内核6.6)` | `k2p-a2-immortalwrt-24.10-` |
+
+点击 **`Run workflow`**，可选参数：
+- `debug`：失败后开远程调试（默认 `false`）；
+- `release`：成功后发布 Release（默认 `false`）。
+
+编译约 **1.5~3 小时**。完成后在本次运行页面底部 **`Artifacts`** 下载对应前缀的压缩包，解压得到：
+
+- `*-sysupgrade.bin`（固件内升级 / Breed 刷入）
+- `*-factory.bin`（原厂升级）
+
+因三个工作流产物前缀不同（见上表），同时存在也不会混淆。
+
+---
+
+## 📁 项目结构（三方案完全独立）
 
 ```
-CONFIG_TARGET_ramips=y
-CONFIG_TARGET_ramips_mt7621=y
-CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_phicomm_k2p=y
-```
-
----
-
-## 三、容量评估（16MB 闪存）
-
-| 版本 | 官方基线镜像 | 加装增量（压缩进 rootfs） | 预估成品 |
-|---|---|---|---|
-| 24.10.6 | 9.63 MiB（10,093,658 字节） | ≈1.5～1.7 MiB | ≈11.2～11.6 MiB |
-| 25.12.2 | 10.19 MiB（10,682,926 字节） | ≈1.5～1.8 MiB | ≈11.7～12.0 MiB |
-
-两版均低于 15MB 编译闸门；最终以实际 `sysupgrade.bin` 体积为准。
-
----
-
-## 四、目录结构
-
-```
-openwrt-k2p-clean/
+k2p-a2-builder/
 ├── .github/workflows/
-│   └── build.yml                       # 矩阵编译：24.10 + 25.12.2
+│   ├── build-lean.yml                    # LEDE 方案
+│   ├── build-immortalwrt-25.12.yml       # ImmortalWrt 25.12 / 内核 6.12
+│   └── build-immortalwrt-24.10.yml       # ImmortalWrt 24.10 / 内核 6.6
 ├── configs/
-│   ├── immortalwrt-24.10.config        # 24.10 种子配置
-│   └── immortalwrt-25.12.config        # 25.12.2 种子配置
-├── files/                              # 固件 overlay（两版本共用，首启写入）
-│   ├── etc/sysctl.d/99-bbr.conf       # 预置 BBR + fq
-│   └── etc/uci-defaults/99-accel-defaults  # 首启写入流卸载/fullcone 防火墙配置
+│   ├── k2p-a2-lean.config                # LEDE 配置
+│   └── k2p-a2-immortalwrt.config         # ImmortalWrt 配置（两版本共用，包兼容）
+├── scripts/
+│   ├── diy-lean.sh                       # LEDE DIY
+│   └── diy-immortalwrt.sh                # ImmortalWrt DIY（两版本共用）
+├── files-lean/                           # LEDE 首次启动脚本 (firewall3/TurboACC)
+│   └── etc/
+│       ├── uci-defaults/99-k2p-a2-init-lede      # LEDE 首次启动脚本
+│       └── sysctl.d/99-bbr-lede.conf             # LEDE BBR 内核参数
+├── files-immortalwrt/                    # ImmortalWrt 首次启动脚本 (firewall4)
+│   └── etc/
+│       ├── uci-defaults/99-k2p-a2-init-immortalwrt  # ImmortalWrt 首次启动脚本
+│       └── sysctl.d/99-bbr-immortalwrt.conf         # ImmortalWrt BBR 内核参数
+├── .gitignore
 └── README.md
 ```
 
-两份 config 包清单完全一致，只有头部注释区分版本；overlay 文件共用。
+> 24.10 与 25.12 的 yml 各自固定分支、独立产出；功能配置与首次启动脚本因两版本包兼容而共用（fullconenat-nft / nft-fullcone / nft-offload / tcp-bbr 在两个分支都存在）。如需针对某版本单独定制，复制一份 config 并在对应 yml 里改 `CONFIG_FILE` 即可。
 
 ---
 
-## 五、云端编译步骤
+## ⚙️ 自定义编译
 
-1. **Fork 本仓库**到自己的 GitHub 账号。
-2. 仓库 **Settings → Actions → General**，允许 Actions 读写。
-3. 打开 **Actions**，启用 `Build K2P ImmortalWrt Firmware (24.10 / 25.12.2)`。
-4. 点 **Run workflow**，矩阵会并行跑两个任务（`fail-fast: false`，一个失败不影响另一个）。
-5. 编译完成后在 Artifacts 下载：
-   - `k2p-24.10` / `k2p-25.12.2`：固件（通配全部 bin，不再限定机型名）
-   - `build-log-24.10` / `build-log-25.12.2`：完整编译日志（排错搜 `error:` / `failed`）
-6. `*-squashfs-sysupgrade.bin` 用于 OpenWrt 下升级；首次从原厂刷入走 Breed / U-Boot 恢复界面。
+改完对应方案的文件，推送到 `main` 会自动触发该方案重新编译。
 
-工作流已做：Ubuntu apt 源换清华镜像、4G Swap 防 OOM、单线程编译（日志不乱序）、15MB 体积闸门校验。
+**改分支**：编辑对应 yml 顶部的 `REPO_BRANCH`（25.12 固定 `openwrt-25.12`，24.10 固定 `openwrt-24.10`）。
 
-> 注意：下载后先核对文件名带 `phicomm_k2p`；如果文件名是别的机型，说明 config 设备符号没生效，不要刷入 K2P。
+**增删插件**：编辑 `configs/k2p-a2-lean.config` 或 `configs/k2p-a2-immortalwrt.config`，按 `CONFIG_PACKAGE_xxx=y` 格式增删。
+
+**改默认 IP / 主机名**：编辑 `scripts/diy-*.sh` 第 1 部分，默认 LAN IP `192.168.2.1`、主机名 `K2P-A2`。
+
+**调加速开关**：编辑对应方案的首次启动脚本（文件名已带方案名，不会混淆）。
+- LEDE：`files-lean/etc/uci-defaults/99-k2p-a2-init-lede`，设置 `turboacc.config.*` 开关；
+- ImmortalWrt：`files-immortalwrt/etc/uci-defaults/99-k2p-a2-init-immortalwrt`，设置 `firewall.@defaults[0]` 的 `fullcone` / `flow_offloading` / `flow_offloading_hw`。
+
+> 各方案文件命名对照：`99-k2p-a2-init-lede` ↔ `99-k2p-a2-init-immortalwrt`、`99-bbr-lede.conf` ↔ `99-bbr-immortalwrt.conf`。
 
 ---
 
-## 六、刷机后配置
+## 🔧 刷机说明（K2P A2）
 
-LuCI 地址 `192.168.1.1`。
+1. **先备份**：备份原厂固件与 EEPROM（无线校准数据）。
+2. **推荐 Breed**：刷入 Breed 引导后，在 Breed 中"固件更新"刷入 `sysupgrade.bin`，分区选**公版布局**。
+3. 从原厂固件直接升级用 `factory.bin`。
+4. 首次开机等待 **3~5 分钟** 完成初始化（自动设置中文 / BBR / Fullcone / 硬件加速）。
+5. 管理页 `http://192.168.2.1`，默认无密码，登录后请立即设置密码。
 
-### 1. ZeroTier 组网
+> **A1 与 A2**：硬件方案接近（MT7621 + MT7615），`phicomm_k2p` 配置对两者通用；A2 的 2.4G 偶有断流属已知驱动问题，可调整信道/频宽规避。
 
-左侧 **服务 → ZeroTier**，网页里加入网络；也可 SSH：
+---
+
+## ✅ 功能验证
+
+刷机联网后 SSH 登录验证：
 
 ```sh
-/etc/init.d/zerotier enable
-/etc/init.d/zerotier start
-zerotier-cli join <network-id>
-zerotier-cli info
+# 1) BBR 是否生效（应输出 bbr）
+sysctl net.ipv4.tcp_congestion_control
+
+# 2) Fullcone / 硬件加速
+#  LEDE 方案：LuCI → 网络 → TurboACC 网络加速，查看开关状态
+#  ImmortalWrt 方案：
+uci show firewall.@defaults[0] | grep -E 'fullcone|flow_offloading'
+ls /sys/kernel/debug/ppe0/entries 2>/dev/null && echo "PPE 硬件流表可用"
+
+# 3) ZeroTier / UPnP 运行状态
+/etc/init.d/zerotier status
+/etc/init.d/miniupnpd status
+
+# 4) 中文界面：LuCI → System → Language → 简体中文
 ```
 
-### 2. 软件流卸载
-
-**网络 → 防火墙** 页面查看“软件流量分载”，固件已默认勾选；硬件流量分载在 MT7621 上无主线驱动，不要勾。
-
-### 3. UPnP
-
-左侧 **服务 → UPnP**，开启后内网设备可自动申请端口映射。
-
-### 4. BBR / fullcone 状态
-
-- BBR：开机即生效。查看当前算法：`sysctl net.ipv4.tcp_congestion_control`；切回 CUBIC：把 `/etc/sysctl.d/99-bbr.conf` 里 `bbr` 改成 `cubic` 后 `sysctl -p`。
-- fullcone：开机即对 IPv4 生效，IPv6 关闭。默认值由首启脚本写入防火墙配置。
+NAT 类型用 NatTypeTester 测试，开启 Fullcone 后应显示 **FullCone / NAT1**。
 
 ---
 
-## 七、注意事项与风险
+## ❓ 常见问题
 
-- **MT7621 没有 Filogic 那种硬件 HNAT/PPE 加速**，本工程只有软件流卸载；不要期待 MT7981 固件里的 HNAT 面板和连接计数。
-- 开启软件流卸载后，**流量统计、限速、SQM QoS 可能失效**，这是流卸载方案的通病。
-- **ZeroTier 走 tun 虚拟网卡，不进入流卸载通道**，与加速功能互不冲突。
-- fullcone **只对 UDP 做真正全锥**；TCP 全锥场景等价于普通 MASQUERADE。
-- fullcone 规则可能与 UPnP、ZeroTier 防火墙规则互相影响；开启后先验证连通性和回程路由。
-- 128MB 内存只跑 ZeroTier + 加速余量充足，不要再叠加 Docker、重流量监控组件。
-- 25.12.2 基线镜像比 24.10 大，余量更紧；若 25.12 编译出现主线包缺失或 kmod 报错，优先用 24.10。
-- 刷机前确认能进 Breed / U-Boot 恢复界面，保留回滚路径。
+**Q：24.10 和 25.12 选哪个？**
+A：两个独立工作流分别产出。25.12 内核 6.12 更新、当前稳定；24.10 内核 6.6 更成熟、资料多。都集成相同功能。
+
+**Q：编译失败？**
+A：多为源码依赖下载失败，重新 Run workflow 即可（已带多线程失败后单线程重试）。仍失败可开 `debug=true` 用 tmate 排查。
+
+**Q：固件超过 15744 KiB 被中止？**
+A：插件太多。在对应 `configs/k2p-a2-*.config` 里关闭非必需项。
+
+**Q：刷机后是英文界面？**
+A：首次启动脚本已设中文；未生效则在 LuCI → System → Language 选简体中文，或检查 `luci-i18n-base-zh-cn` 是否编入。
+
+---
+
+## 🙏 致谢
+
+- [Lean / coolsnowwolf/lede](https://github.com/coolsnowwolf/lede) —— 成熟 K2P 固件源码
+- [ImmortalWrt](https://github.com/immortalwrt/immortalwrt) —— 新内核、原生 Fullcone 支持
+- [coolsnowwolf/luci](https://github.com/coolsnowwolf/luci) —— 中文 LuCI 与 TurboACC
+- 斐讯 K2P 开源社区 —— 持续的驱动与工具链维护
+
+---
+
+**License**: MIT
