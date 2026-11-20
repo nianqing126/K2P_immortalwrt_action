@@ -1,3 +1,14 @@
+name: Build K2P ImmortalWrt 24.10
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@main
+
       - name: 替换Ubuntu源为清华镜像
         run: |
           sudo sed -i 's/archive.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list
@@ -28,7 +39,7 @@
           cp configs/immortalwrt-24.10.config openwrt/.config
           cd openwrt
           make defconfig
-          # 关闭全量host编译（重点防OOM）
+          # 关闭全量host编译，防止疯狂吃内存
           sed -i 's/CONFIG_BUILD_ALL_HOST=y/CONFIG_BUILD_ALL_HOST=n/g' .config
 
       - name: 更新feeds并安装
@@ -37,7 +48,13 @@
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 编译固件（单线程-j1）
+      - name: 编译固件（单线程 -j1）
         run: |
           cd openwrt
           make -j1 V=s
+
+      - name: 上传固件成品
+        uses: actions/upload-artifact@main
+        with:
+          name: K2P-ImmortalWrt-24.10
+          path: openwrt/bin/targets/ramips/mt7621/
