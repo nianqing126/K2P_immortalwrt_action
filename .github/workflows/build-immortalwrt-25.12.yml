@@ -31,7 +31,7 @@ env:
   KERNEL_HINT: 6.12
   CONFIG_FILE: configs/k2p-a2-immortalwrt.config
   DIY_SCRIPT: scripts/diy-immortalwrt.sh
-  FILES_DIR: files-immortalwrt
+  K2P_FILES_DIR: files-immortalwrt
   FIRMWARE_DIR: bin/targets/ramips/mt7621
   DEVICE_NAME: phicomm_k2p
   # 16MB 闪存固件上限，ImmortalWrt 源码 IMAGE_SIZE := 15744k
@@ -83,9 +83,9 @@ jobs:
         working-directory: openwrt
         run: |
           cp "../$CONFIG_FILE" .config
-          if [ -d "../$FILES_DIR" ]; then
+          if [ -d "../${K2P_FILES_DIR}" ]; then
             rm -rf files
-            cp -a "../$FILES_DIR" ./files
+            cp -a "../${K2P_FILES_DIR}" ./files
           fi
           make defconfig
           echo "===== 关键配置校验 ====="
