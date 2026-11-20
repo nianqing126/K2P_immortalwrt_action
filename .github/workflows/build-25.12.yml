@@ -63,23 +63,14 @@ jobs:
           mkdir -p openwrt/files
           cp -a files/. openwrt/files/
 
-      - name: 生成 defconfig 并锁定 K2P 设备
+      - name: 生成 defconfig 并校验 K2P 设备（仅一次 defconfig）
         working-directory: openwrt
         run: |
           make defconfig
-          # 兜底：确保 default-settings 不被默认带起
-          sed -i '/CONFIG_PACKAGE_default-settings=y/d' .config
-          echo '# CONFIG_PACKAGE_default-settings is not set' >> .config
-          echo '# CONFIG_PACKAGE_default-settings-chn is not set' >> .config
-          # 锁定设备：关闭同 subtarget 其他 mt7621 机型，仅保留 phicomm_k2p
-          sed -i '/^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_/ { /phicomm_k2p/! s/=y$/=n/ }' .config
-          echo 'CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_phicomm_k2p=y' >> .config
-          make defconfig
-          # 校验：必须选中 K2P，否则中止
           echo "=== 当前选中的 mt7621 设备 ==="
           grep -E '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_.*=y' .config
           grep -q '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_phicomm_k2p=y' .config \
-            || { echo '!! 未选中 phicomm_k2p，设备锁定失败，中止编译'; exit 1; }
+            || { echo '!! 未选中 phicomm_k2p，设备配置未生效，中止编译'; exit 1; }
 
       - name: 下载软件包源码
         working-directory: openwrt
