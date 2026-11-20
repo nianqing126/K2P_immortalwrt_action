@@ -22,14 +22,6 @@ on:
         options:
           - 'false'
           - 'true'
-  push:
-    branches:
-      - main
-    paths:
-      - 'configs/**'
-      - 'scripts/**'
-      - 'files/**'
-      - '.github/workflows/build.yml'
 
 # ======================== 可自定义环境变量 ========================
 env:

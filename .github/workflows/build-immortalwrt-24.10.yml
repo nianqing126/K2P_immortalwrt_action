@@ -21,14 +21,6 @@ on:
         options:
           - 'false'
           - 'true'
-  push:
-    branches:
-      - main
-    paths:
-      - 'configs/k2p-a2-immortalwrt.config'
-      - 'scripts/diy-immortalwrt.sh'
-      - 'files-immortalwrt/**'
-      - '.github/workflows/build-immortalwrt-24.10.yml'
 
 # ======================== 可自定义环境变量 ========================
 env:
