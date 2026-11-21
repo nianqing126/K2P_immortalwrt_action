@@ -96,7 +96,7 @@ jobs:
             luci-app-ssr-plus xray-core dns2tcp ipt2socks microsocks v2ray shadowsocksr-libev
             luci-app-vlmcsd vlmcsd luci-app-vsftpd vsftpd luci-app-filetransfer
             luci-app-ddns ddns-scripts luci-app-nlbwmon nlbwmon luci-app-wol
-            luci-app-arpbind luci-app-autoreboot luci-app-oui luci-theme-design
+            luci-app-arpbind luci-app-autoreboot luci-theme-design
           "
           for p in $DISABLE; do
             sed -i "s/^CONFIG_PACKAGE_${p}=y$/# CONFIG_PACKAGE_${p} is not set/" .config
@@ -106,6 +106,8 @@ jobs:
           grep -E 'CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p|CONFIG_PACKAGE_(zerotier|luci-app-zerotier|luci-app-upnp|kmod-nft-offload|kmod-nft-fullcone|kmod-tcp-bbr|luci-proto-ipv6|odhcpd-ipv6only|odhcp6c|ipv6helper|ip6tables|kmod-ip6tables)' .config || true
           echo "===== 确认全家桶已关闭(应无 y 输出) ====="
           grep -E '^CONFIG_PACKAGE_(luci-app-ssr-plus|xray-core|luci-app-vlmcsd|luci-app-vsftpd|luci-theme-design)=y$' .config || echo "OK: 全家桶已全部关闭"
+          echo "===== 关键依赖 oui 必须开启 ====="
+          grep -E '^CONFIG_PACKAGE_luci-app-oui=y$' .config && echo "OK: oui 已开启" || echo "::error::luci-app-oui 被关闭会导致 luci 安装失败，请在配置中设为 =y"
 
       - name: 预下载 dl 依赖
         working-directory: openwrt
